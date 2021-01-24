@@ -38,8 +38,10 @@ class TaskExecutors<ID, T> {
 
     TaskExecutors(WorkerRunnableFactory<ID, T> workerRunnableFactory, int workerCount, AtomicBoolean isShutdown) {
         this.isShutdown = isShutdown;
+        // 工作线程集合
         this.workerThreads = new ArrayList<>();
 
+        // 创建20个线程，相当于是搞了一个线程池
         ThreadGroup threadGroup = new ThreadGroup("eurekaTaskExecutors");
         for (int i = 0; i < workerCount; i++) {
             WorkerRunnable<ID, T> runnable = workerRunnableFactory.create(i);
@@ -76,6 +78,7 @@ class TaskExecutors<ID, T> {
         final AtomicBoolean isShutdown = new AtomicBoolean();
         final TaskExecutorMetrics metrics = new TaskExecutorMetrics(name);
         registeredMonitors.put(name, metrics);
+        // BatchWorkerRunnable 批量任务处理
         return new TaskExecutors<>(idx -> new BatchWorkerRunnable<>("TaskBatchingWorker-" + name + '-' + idx, isShutdown, metrics, processor, acceptorExecutor), workerCount, isShutdown);
     }
 
@@ -183,16 +186,20 @@ class TaskExecutors<ID, T> {
         public void run() {
             try {
                 while (!isShutdown.get()) {
+                    // 获取一个批量任务
                     List<TaskHolder<ID, T>> holders = getWork();
                     metrics.registerExpiryTimes(holders);
 
+                    // TaskHolder 提取 ReplicationTask
                     List<T> tasks = getTasksOf(holders);
+                    // processor => 任务复制处理器 ReplicationTaskProcessor
                     ProcessingResult result = processor.process(tasks);
                     switch (result) {
                         case Success:
                             break;
                         case Congestion:
                         case TransientError:
+                            // 阻塞或网络失败就重新处理这批任务
                             taskDispatcher.reprocess(holders, result);
                             break;
                         case PermanentError:
@@ -209,10 +216,12 @@ class TaskExecutors<ID, T> {
         }
 
         private List<TaskHolder<ID, T>> getWork() throws InterruptedException {
+            // 获取批量队列 batchWorkQueue
             BlockingQueue<List<TaskHolder<ID, T>>> workQueue = taskDispatcher.requestWorkItems();
             List<TaskHolder<ID, T>> result;
             do {
                 result = workQueue.poll(1, TimeUnit.SECONDS);
+                // 循环等待，直到取到一个批量任务
             } while (!isShutdown.get() && result == null);
             return (result == null) ? new ArrayList<>() : result;
         }

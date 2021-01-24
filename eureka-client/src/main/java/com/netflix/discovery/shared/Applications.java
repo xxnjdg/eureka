@@ -103,10 +103,13 @@ public class Applications {
     public Applications(@JsonProperty("appsHashCode") String appsHashCode,
             @JsonProperty("versionDelta") Long versionDelta,
             @JsonProperty("application") List<Application> registeredApplications) {
+        // 实例应用队列
         this.applications = new ConcurrentLinkedQueue<Application>();
+        // key 为 appName，Value 为对应的应用
         this.appNameApplicationMap = new ConcurrentHashMap<String, Application>();
         this.virtualHostNameAppMap = new ConcurrentHashMap<String, VipIndexSupport>();
         this.secureVirtualHostNameAppMap = new ConcurrentHashMap<String, VipIndexSupport>();
+        // hash 值
         this.appsHashCode = appsHashCode;
         this.versionDelta = versionDelta;
 

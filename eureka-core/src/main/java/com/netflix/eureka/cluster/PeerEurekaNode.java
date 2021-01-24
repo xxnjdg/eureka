@@ -73,14 +73,21 @@ public class PeerEurekaNode {
 
     public static final String HEADER_REPLICATION = "x-netflix-discovery-replication";
 
+    //eureka-server 地址
     private final String serviceUrl;
     private final EurekaServerConfig config;
+    //最大处理延迟毫秒数，默认为30000毫秒，即30秒，在下线的时候有用到
     private final long maxProcessingDelayMs;
+    //本地注册表
     private final PeerAwareInstanceRegistry registry;
+    //eureka-server host
     private final String targetHost;
+    //基于 jersey 的集群复制客户端通信组件，它在请求头中设置 了 PeerEurekaNode.HEADER_REPLICATION 为 true
     private final HttpReplicationClient replicationClient;
 
+    //批量任务分发器，它会将任务打成一个批次提交到 eureka-server，避免多次请求eureka-server，注册时就是先用这个分发器提交的任务
     private final TaskDispatcher<String, ReplicationTask> batchingDispatcher;
+    //非批量任务分发器，就是一个任务一个任务的提交
     private final TaskDispatcher<String, ReplicationTask> nonBatchingDispatcher;
 
     public PeerEurekaNode(PeerAwareInstanceRegistry registry, String targetHost, String serviceUrl, HttpReplicationClient replicationClient, EurekaServerConfig config) {
@@ -99,18 +106,28 @@ public class PeerEurekaNode {
         this.config = config;
         this.maxProcessingDelayMs = config.getMaxTimeForReplication();
 
+        // 批处理器名称
         String batcherName = getBatcherName();
+        // 复制任务处理器 它封装了 targetHost 和 replicationClient，主要就是 ReplicationTaskProcessor 在处理批量任务的提交
         ReplicationTaskProcessor taskProcessor = new ReplicationTaskProcessor(targetHost, replicationClient);
+        // 批量任务分发器
         this.batchingDispatcher = TaskDispatchers.createBatchingTaskDispatcher(
                 batcherName,
+                // 复制池里最大容量，默认 10000
                 config.getMaxElementsInPeerReplicationPool(),
+                // 250
                 batchSize,
+                // 同步使用的最大线程数 默认 20
                 config.getMaxThreadsForPeerReplication(),
+                // 500
                 maxBatchingDelayMs,
+                // 1000
                 serverUnavailableSleepTimeMs,
+                // 100
                 retrySleepTimeMs,
                 taskProcessor
         );
+        // 单个任务分发器
         this.nonBatchingDispatcher = TaskDispatchers.createNonBatchingTaskDispatcher(
                 targetHost,
                 config.getMaxElementsInStatusReplicationPool(),
@@ -132,6 +149,7 @@ public class PeerEurekaNode {
      * @throws Exception
      */
     public void register(final InstanceInfo info) throws Exception {
+        // 过期时间：当前时间 + 租约时间（默认90秒）
         long expiryTime = System.currentTimeMillis() + getLeaseRenewalOf(info);
         batchingDispatcher.process(
                 taskId("register", info),
@@ -213,6 +231,7 @@ public class PeerEurekaNode {
                     if (info != null) {
                         logger.warn("{}: cannot find instance id {} and hence replicating the instance with status {}",
                                 getTaskName(), info.getId(), info.getStatus());
+                        // 复制返回 404 时，重新注册
                         register(info);
                     }
                 } else if (config.shouldSyncWhenTimestampDiffers()) {
@@ -366,6 +385,7 @@ public class PeerEurekaNode {
                     logger.warn("Overridden Status info -id {}, mine {}, peer's {}", id, info.getOverriddenStatus(), infoFromPeer.getOverriddenStatus());
                     registry.storeOverriddenStatusIfRequired(appName, id, infoFromPeer.getOverriddenStatus());
                 }
+                // 将服务端的实例注册到本地，实现数据同步
                 registry.register(infoFromPeer, true);
             }
         } catch (Throwable e) {

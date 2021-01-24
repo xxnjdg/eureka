@@ -170,6 +170,7 @@ public class ApplicationInfoManager {
             return;
         }
 
+        // 如果状态变更了，才会返回之前的状态，然后触发状态变更监听器
         InstanceStatus prev = instanceInfo.setStatus(next);
         if (prev != null) {
             for (StatusChangeListener listener : listeners.values()) {
@@ -246,12 +247,15 @@ public class ApplicationInfoManager {
     }
 
     public void refreshLeaseInfoIfRequired() {
+        // 当前实例续约信息
         LeaseInfo leaseInfo = instanceInfo.getLeaseInfo();
         if (leaseInfo == null) {
             return;
         }
+        // 从配置中获取续约信息
         int currentLeaseDuration = config.getLeaseExpirationDurationInSeconds();
         int currentLeaseRenewal = config.getLeaseRenewalIntervalInSeconds();
+        // 如果续约信息变了，就重新创建续约信息，并设置实例为 dirty
         if (leaseInfo.getDurationInSecs() != currentLeaseDuration || leaseInfo.getRenewalIntervalInSecs() != currentLeaseRenewal) {
             LeaseInfo newLeaseInfo = LeaseInfo.Builder.newBuilder()
                     .setRenewalIntervalInSecs(currentLeaseRenewal)

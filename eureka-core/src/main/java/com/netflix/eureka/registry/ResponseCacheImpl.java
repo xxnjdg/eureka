@@ -123,12 +123,18 @@ public class ResponseCacheImpl implements ResponseCache {
     ResponseCacheImpl(EurekaServerConfig serverConfig, ServerCodecs serverCodecs, AbstractInstanceRegistry registry) {
         this.serverConfig = serverConfig;
         this.serverCodecs = serverCodecs;
+        // 是否使用只读缓存，默认为 true
         this.shouldUseReadOnlyResponseCache = serverConfig.shouldUseReadOnlyResponseCache();
+        // 保存注册表
         this.registry = registry;
 
+        // 缓存更新间隔时间，默认30秒
         long responseCacheUpdateIntervalMs = serverConfig.getResponseCacheUpdateIntervalMs();
+        // 使用 google guava cache 构造一个读写缓存
         this.readWriteCacheMap =
+                // 初始容量为1000
                 CacheBuilder.newBuilder().initialCapacity(serverConfig.getInitialCapacityOfResponseCache())
+                        // 缓存的数据在写入多久后过期，默认180秒，也就是说 readWriteCacheMap 会定时过期
                         .expireAfterWrite(serverConfig.getResponseCacheAutoExpirationInSeconds(), TimeUnit.SECONDS)
                         .removalListener(new RemovalListener<Key, Value>() {
                             @Override
@@ -140,6 +146,7 @@ public class ResponseCacheImpl implements ResponseCache {
                                 }
                             }
                         })
+                        // 当key对应的元素不存在时，使用定义 CacheLoader 加载元素
                         .build(new CacheLoader<Key, Value>() {
                             @Override
                             public Value load(Key key) throws Exception {
@@ -147,12 +154,15 @@ public class ResponseCacheImpl implements ResponseCache {
                                     Key cloneWithNoRegions = key.cloneWithoutRegions();
                                     regionSpecificKeys.put(cloneWithNoRegions, key);
                                 }
+                                // 获取元素
                                 Value value = generatePayload(key);
                                 return value;
                             }
                         });
 
         if (shouldUseReadOnlyResponseCache) {
+            // 如果配置了使用只读缓存，就开启一个定时任务，定期将 readWriteCacheMap 的数据同步到 readOnlyCacheMap 中
+            // 默认间隔时间是 30 秒
             timer.schedule(getCacheUpdateTask(),
                     new Date(((System.currentTimeMillis() / responseCacheUpdateIntervalMs) * responseCacheUpdateIntervalMs)
                             + responseCacheUpdateIntervalMs),
@@ -178,8 +188,11 @@ public class ResponseCacheImpl implements ResponseCache {
                     }
                     try {
                         CurrentRequestVersion.set(key.getVersion());
+                        // 获取读写缓存中的数据
                         Value cacheValue = readWriteCacheMap.get(key);
+                        // 获取只读缓存中的数据
                         Value currentCacheValue = readOnlyCacheMap.get(key);
+                        // 如果 readOnlyCacheMap 中缓存的值与 readWriteCacheMap 缓存的值不同，就用 readWriteCacheMap 的值覆盖 readOnlyCacheMap 的值
                         if (cacheValue != currentCacheValue) {
                             readOnlyCacheMap.put(key, cacheValue);
                         }
@@ -252,10 +265,13 @@ public class ResponseCacheImpl implements ResponseCache {
         for (Key.KeyType type : Key.KeyType.values()) {
             for (Version v : Version.values()) {
                 invalidate(
+                        // 失效服务的缓存
                         new Key(Key.EntityType.Application, appName, type, v, EurekaAccept.full),
                         new Key(Key.EntityType.Application, appName, type, v, EurekaAccept.compact),
+                        // 失效所有 APP 的缓存
                         new Key(Key.EntityType.Application, ALL_APPS, type, v, EurekaAccept.full),
                         new Key(Key.EntityType.Application, ALL_APPS, type, v, EurekaAccept.compact),
+                        // 失效增量 APP 的缓存
                         new Key(Key.EntityType.Application, ALL_APPS_DELTA, type, v, EurekaAccept.full),
                         new Key(Key.EntityType.Application, ALL_APPS_DELTA, type, v, EurekaAccept.compact)
                 );
@@ -279,6 +295,7 @@ public class ResponseCacheImpl implements ResponseCache {
             logger.debug("Invalidating the response cache key : {} {} {} {}, {}",
                     key.getEntityType(), key.getName(), key.getVersion(), key.getType(), key.getEurekaAccept());
 
+            // 失效读写缓存
             readWriteCacheMap.invalidate(key);
             Collection<Key> keysWithRegions = regionSpecificKeys.get(key);
             if (null != keysWithRegions && !keysWithRegions.isEmpty()) {
@@ -353,14 +370,17 @@ public class ResponseCacheImpl implements ResponseCache {
         Value payload = null;
         try {
             if (useReadOnlyCache) {
+                // 开启使用只读缓存，则先从只读缓存读取
                 final Value currentPayload = readOnlyCacheMap.get(key);
                 if (currentPayload != null) {
                     payload = currentPayload;
                 } else {
+                    // 只读缓存中没有，则从读写缓存中读取，然后放入只读缓存中
                     payload = readWriteCacheMap.get(key);
                     readOnlyCacheMap.put(key, payload);
                 }
             } else {
+                // 未开启只读缓存，就从读写缓存中读取
                 payload = readWriteCacheMap.get(key);
             }
         } catch (Throwable t) {
@@ -415,15 +435,18 @@ public class ResponseCacheImpl implements ResponseCache {
                 case Application:
                     boolean isRemoteRegionRequested = key.hasRegions();
 
+                    // 获取所有应用
                     if (ALL_APPS.equals(key.getName())) {
                         if (isRemoteRegionRequested) {
                             tracer = serializeAllAppsWithRemoteRegionTimer.start();
                             payload = getPayLoad(key, registry.getApplicationsFromMultipleRegions(key.getRegions()));
                         } else {
                             tracer = serializeAllAppsTimer.start();
+                            // 从注册表读取所有服务实例
                             payload = getPayLoad(key, registry.getApplications());
                         }
                     } else if (ALL_APPS_DELTA.equals(key.getName())) {
+                        // 增量获取应用
                         if (isRemoteRegionRequested) {
                             tracer = serializeDeltaAppsWithRemoteRegionTimer.start();
                             versionDeltaWithRegions.incrementAndGet();
@@ -434,6 +457,7 @@ public class ResponseCacheImpl implements ResponseCache {
                             tracer = serializeDeltaAppsTimer.start();
                             versionDelta.incrementAndGet();
                             versionDeltaLegacy.incrementAndGet();
+                            // 获取增量注册表
                             payload = getPayLoad(key, registry.getApplicationDeltas());
                         }
                     } else {

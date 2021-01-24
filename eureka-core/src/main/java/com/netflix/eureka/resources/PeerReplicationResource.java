@@ -145,6 +145,7 @@ public class PeerReplicationResource {
     }
 
     private static Builder handleHeartbeat(EurekaServerConfig config, InstanceResource resource, String lastDirtyTimestamp, String overriddenStatus, String instanceStatus) {
+        // 调用 renewLease 续约
         Response response = resource.renewLease(REPLICATION, overriddenStatus, instanceStatus, lastDirtyTimestamp);
         int responseStatus = response.getStatus();
         Builder responseBuilder = new Builder().setStatusCode(responseStatus);
@@ -156,6 +157,7 @@ public class PeerReplicationResource {
         } else {
             if ((responseStatus == Status.OK.getStatusCode() || responseStatus == Status.CONFLICT.getStatusCode())
                     && response.getEntity() != null) {
+                // 续约成功或 CONFLICT 冲突时，将本地实例 appInfo 返回到客户端
                 responseBuilder.setResponseEntity((InstanceInfo) response.getEntity());
             }
         }

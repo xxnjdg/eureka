@@ -135,6 +135,7 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
     ) {
         super(serverConfig, clientConfig, serverCodecs);
         this.eurekaClient = eurekaClient;
+        // 最近一分钟集群同步的次数计数器
         this.numberOfReplicationsLastMin = new MeasuredRate(1000 * 60 * 1);
         // We first check if the instance is STARTING or DOWN, then we check explicit overrides,
         // then we check the status of a potentially existing lease.
@@ -149,10 +150,14 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
 
     @Override
     public void init(PeerEurekaNodes peerEurekaNodes) throws Exception {
+        // 启动计数器
         this.numberOfReplicationsLastMin.start();
         this.peerEurekaNodes = peerEurekaNodes;
+        // 初始化响应缓存，eureka server 构造了一个多级缓存来响应客户端抓取注册表的请求
         initializedResponseCache();
+        // 定时调度任务更新续约阀值，主要就是更新 numberOfRenewsPerMinThreshold 这个值，即每分钟续约次数
         scheduleRenewalThresholdUpdateTask();
+        // 初始化 RemoteRegionRegistry
         initRemoteRegionRegistry();
 
         try {
@@ -210,9 +215,11 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
         // Copy entire entry from neighboring DS node
         int count = 0;
 
+        // 注册表同步重试次数，默认5次
         for (int i = 0; ((i < serverConfig.getRegistrySyncRetries()) && (count == 0)); i++) {
             if (i > 0) {
                 try {
+                    // 同步重试时间，默认30秒
                     Thread.sleep(serverConfig.getRegistrySyncRetryWaitMs());
                 } catch (InterruptedException e) {
                     logger.warn("Interrupted during registry transfer..");
@@ -224,6 +231,7 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
                 for (InstanceInfo instance : app.getInstances()) {
                     try {
                         if (isRegisterable(instance)) {
+                            // 注册实例
                             register(instance, instance.getLeaseInfo().getDurationInSecs(), true);
                             count++;
                         }
@@ -239,7 +247,9 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
     @Override
     public void openForTraffic(ApplicationInfoManager applicationInfoManager, int count) {
         // Renewals happen every 30 seconds and for a minute it should be a factor of 2.
+        // 期望的客户端每分钟的续约次数
         this.expectedNumberOfClientsSendingRenews = count;
+        // 更新每分钟续约阀值
         updateRenewsPerMinThreshold();
         logger.info("Got {} instances from neighboring DS node", count);
         logger.info("Renew threshold is: {}", numberOfRenewsPerMinThreshold);
@@ -254,6 +264,7 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
             primeAwsReplicas(applicationInfoManager);
         }
         logger.info("Changing status to UP");
+        // 设置实例状态为已启动
         applicationInfoManager.setInstanceStatus(InstanceStatus.UP);
         super.postInit();
     }
@@ -405,10 +416,13 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
     @Override
     public void register(final InstanceInfo info, final boolean isReplication) {
         int leaseDuration = Lease.DEFAULT_DURATION_IN_SECS;
+        // 如果实例中没有周期的配置，就设置为默认的 90 秒
         if (info.getLeaseInfo() != null && info.getLeaseInfo().getDurationInSecs() > 0) {
             leaseDuration = info.getLeaseInfo().getDurationInSecs();
         }
+        // 注册实例
         super.register(info, leaseDuration, isReplication);
+        // 复制到集群其它 server 节点
         replicateToPeers(Action.Register, info.getAppName(), info.getId(), info, null, isReplication);
     }
 
@@ -419,7 +433,9 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
      * java.lang.String, long, boolean)
      */
     public boolean renew(final String appName, final String id, final boolean isReplication) {
+        // 调用父类（AbstractInstanceRegistry）的 renew 续约
         if (super.renew(appName, id, isReplication)) {
+            // 续约完成后同步到集群其它节点
             replicateToPeers(Action.Heartbeat, appName, id, null, null, isReplication);
             return true;
         }
@@ -479,10 +495,12 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
 
     @Override
     public boolean isLeaseExpirationEnabled() {
+        // 先判断是否启用了自我保护机制
         if (!isSelfPreservationModeEnabled()) {
             // The self preservation mode is disabled, hence allowing the instances to expire.
             return true;
         }
+        // 每分钟续约阈值大于0, 且 最近一分钟续约次数 大于 每分钟续约阈值
         return numberOfRenewsPerMinThreshold > 0 && getNumOfRenewsInLastMin() > numberOfRenewsPerMinThreshold;
     }
 
@@ -632,6 +650,7 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
         Stopwatch tracer = action.getTimer().start();
         try {
             if (isReplication) {
+                // 如果是来自其它server节点的注册请求，则最近一分钟集群同步次数+1
                 numberOfReplicationsLastMin.increment();
             }
             // If it is a replication already, do not replicate again as this will create a poison replication
@@ -639,6 +658,7 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
                 return;
             }
 
+            // 如果是来自客户端的注册请求，就同步到集群中其它server节点
             for (final PeerEurekaNode node : peerEurekaNodes.getPeerEurekaNodes()) {
                 // If the url represents this host, do not replicate to yourself.
                 if (peerEurekaNodes.isThisMyUrl(node.getServiceUrl())) {
@@ -664,14 +684,17 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
             CurrentRequestVersion.set(Version.V2);
             switch (action) {
                 case Cancel:
+                    // 下线
                     node.cancel(appName, id);
                     break;
                 case Heartbeat:
                     InstanceStatus overriddenStatus = overriddenInstanceStatusMap.get(id);
                     infoFromRegistry = getInstanceByAppAndId(appName, id, false);
+                    // 续约
                     node.heartbeat(appName, id, infoFromRegistry, overriddenStatus, false);
                     break;
                 case Register:
+                    // 注册
                     node.register(info);
                     break;
                 case StatusUpdate:
